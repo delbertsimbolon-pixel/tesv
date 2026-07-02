@@ -1,4 +1,3 @@
-import io
 import requests
 import math
 import pandas as pd
@@ -15,16 +14,15 @@ if "optimization_result" not in st.session_state:
     st.session_state.optimization_result = None
 if "optimization_data" not in st.session_state:
     st.session_state.optimization_data = None
-
-# Track the number of locations dynamically for manual entry
-if "num_locations" not in st.session_state:
-    st.session_state.num_locations = 2  # Starts with 2 locations
+if "optimization_metrics" not in st.session_state:
+    st.session_state.optimization_metrics = None
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Distribution Route Optimization System", layout="wide", page_icon="👟")
+st.set_page_config(page_title="CV XX Shoes Distribution DSS", layout="wide", page_icon="👟")
 
 # --- HEADER ---
-st.title("Distribution Route Optimization System")
+st.title("Shoes Distribution Route Optimization System")
+st.markdown("**Case Study:** CV XX CVRPTW Model (Updated Locations)")
 
 # -------------------------------
 # OSRM helpers
@@ -65,12 +63,12 @@ def get_full_osrm_route(route):
         all_points.extend(segment_points)
     return all_points, None
 
-def create_enhanced_route_map(routes, default_lat=0.0, default_lon=0.0):
+def create_enhanced_route_map(routes):
     route_colors = ["#FF0000", "#0000FF", "#008000", "#FFA500", "#800080", "#FF00FF", "#00FFFF"]
     
     valid_routes = [r for r in routes if r.get("Coordinates") and len(r["Coordinates"]) > 1]
     if not valid_routes:
-        fallback_map = folium.Map(location=[default_lat, default_lon], zoom_start=11)
+        fallback_map = folium.Map(location=[-6.60315, 106.76218], zoom_start=11)
         return fallback_map
 
     combined_map = folium.Map(location=valid_routes[0]["Coordinates"][0], zoom_start=11)
@@ -133,14 +131,7 @@ def compute_vehicle_metrics(result, data):
 
 def parse_time_to_minutes(time_str):
     try:
-        if pd.isna(time_str) or not str(time_str).strip():
-            return 0
-        
-        time_str = str(time_str).strip()
-        if "." in time_str and ":" not in time_str:
-            time_str = time_str.split(".")[0]
-            
-        parts = time_str.split(":")
+        parts = time_str.strip().split(":")
         hours = int(parts[0])
         minutes = int(parts[1]) if len(parts) > 1 else 0
         return (hours * 60) + minutes
@@ -154,172 +145,106 @@ st.sidebar.header("⚙️ Operational Scenarios")
 scenario = st.sidebar.selectbox("Select Scenario", ["Normal distribution day", "Peak distribution day", "Delayed departure"])
 
 st.sidebar.header("🚚 Fleet Parameters")
-fuel_cost_per_km = st.sidebar.number_input("Fuel Cost per KM", 0, 50000, 0)
-driver_cost_per_vehicle = st.sidebar.number_input("Driver Cost per Vehicle", 0, 500000, 0)
-num_vehicles = st.sidebar.number_input("Number of Vehicles", 1, 15, 1)
-vehicle_capacity = st.sidebar.number_input("Vehicle Capacity", 1, 50000, 100)
+fuel_cost_per_km = st.sidebar.number_input("Fuel Cost per KM", 1000, 50000, 5000)
+driver_cost_per_vehicle = st.sidebar.number_input("Driver Cost per Vehicle", 10000, 500000, 50000)
+num_vehicles = st.sidebar.number_input("Number of Vehicles", 1, 15, 5)
+vehicle_capacity = st.sidebar.number_input("Vehicle Capacity (Cartons/Pairs)", 50, 10000, 2500)
 
 # -------------------------------
-# Dynamic Sidebar Location Controls (Manual vs Excel Layout)
+# Dynamic Sidebar Location Controls (10:00 - 22:00 default for customers)
 # -------------------------------
-st.sidebar.header("📦 Location Configurations")
-input_method = st.sidebar.radio("Data Entry Method", ["Manual Entry", "Excel Upload"])
+st.sidebar.header("📦 Location Custom Configurations")
 
-user_locations = []
-depot_indices = []
+locations_metadata = [
+    {"name": "Depot", "def_demand": 0, "def_open": "00:00", "def_close": "23:59"},
+    {"name": "Tangerang", "def_demand": 2000, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Pejaten", "def_demand": 220, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Central Park", "def_demand": 195, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Cikarang", "def_demand": 100, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Karawaci", "def_demand": 80, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Cibinong", "def_demand": 55, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Cibubur", "def_demand": 80, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Pondok Indah Mall 2", "def_demand": 80, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Casablanca", "def_demand": 95, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Alam Sutera", "def_demand": 130, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Depok", "def_demand": 100, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Sudirman", "def_demand": 110, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Plaza Indonesia", "def_demand": 200, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Bintaro", "def_demand": 170, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Bogor", "def_demand": 1000, "def_open": "10:00", "def_close": "22:00"},
+    {"name": "Ciomas", "def_demand": 400, "def_open": "10:00", "def_close": "22:00"}
+]
 
-if input_method == "Manual Entry":
-    if st.sidebar.button("➕ Add Location"):
-        st.session_state.num_locations += 1
+user_demands = []
+user_time_windows = []
 
-    for i in range(st.session_state.num_locations):
-        loc_id = i + 1
-        with st.sidebar.expander(f"📍 Location {loc_id}", expanded=(i >= 2)):
-            loc_type = st.selectbox("Location Type", ["delivery point", "depot"], index=0, key=f"type_{loc_id}")
+for loc in locations_metadata:
+    with st.sidebar.expander(f"📍 {loc['name']}", expanded=False):
+        if loc["name"] != "Depot":
+            demand_input = st.number_input(f"Demand", 0, 5000, loc["def_demand"], key=f"d_in_{loc['name']}")
+        else:
+            demand_input = 0
+            st.caption("Depot load defaults to 0.")
             
-            col_lat, col_lon = st.columns(2)
-            lat = col_lat.number_input("Latitude", value=0.0, format="%.6f", key=f"lat_{loc_id}")
-            lon = col_lon.number_input("Longitude", value=0.0, format="%.6f", key=f"lon_{loc_id}")
-            
-            if loc_type == "delivery point":
-                demand_input = st.number_input("Demand", 0, 10000, 0, key=f"d_in_{loc_id}")
-            else:
-                demand_input = 0
-                st.caption("Depot load defaults to 0.")
-                depot_indices.append(i)
-                
-            col_start, col_end = st.columns(2)
-            open_time_str = col_start.text_input("Open (HH:MM)", "00:00", key=f"o_tm_{loc_id}")
-            close_time_str = col_end.text_input("Close (HH:MM)", "23:59", key=f"c_tm_{loc_id}")
-            
-            start_minutes = parse_time_to_minutes(open_time_str)
-            end_minutes = parse_time_to_minutes(close_time_str)
-            
-            if start_minutes > end_minutes:
-                st.error("Opening time cannot be later than closing time.")
-                end_minutes = start_minutes
-                
-            user_locations.append({
-                "name": f"Location {loc_id}" if loc_type == "delivery point" else f"Depot {loc_id}",
-                "coords": (lat, lon),
-                "demand": demand_input,
-                "time_window": (start_minutes, end_minutes)
-            })
-
-else:
-    st.sidebar.markdown("**Step 1: Download the Template**")
-    
-    # Generate CSV formatting matrix dynamically on-the-fly 
-    template_data = {
-        "Location Name": ["Depot Example", "Delivery Place 1"],
-        "Location Type": ["depot", "delivery point"],
-        "Latitude": [-6.603150, -6.335336],
-        "Longitude": [106.762180, 106.680340],
-        "Demand": [0, 250],
-        "Open Time": ["00:00", "08:00"],
-        "Close Time": ["23:59", "20:00"]
-    }
-    template_df = pd.DataFrame(template_data)
-    template_csv = template_df.to_csv(index=False).encode("utf-8")
+        col_start, col_end = st.columns(2)
+        open_time_str = col_start.text_input("Open (HH:MM)", loc["def_open"], key=f"o_tm_{loc['name']}")
+        close_time_str = col_end.text_input("Close (HH:MM)", loc["def_close"], key=f"c_tm_{loc['name']}")
         
-    st.sidebar.download_button(
-        label="📥 Download Template Table",
-        data=template_csv,
-        file_name="route_optimization_template.csv",
-        mime="text/csv"
-    )
-
-    st.sidebar.markdown("**Step 2: Upload your File**")
-    uploaded_file = st.sidebar.file_uploader("Upload Completed File", type=["xlsx", "xls", "csv"])
-    
-    if uploaded_file is not None:
-        try:
-            if uploaded_file.name.endswith(".csv"):
-                df = pd.read_csv(uploaded_file)
-            else:
-                df = pd.read_excel(uploaded_file)
-                
-            df.columns = df.columns.str.strip()
+        start_minutes = parse_time_to_minutes(open_time_str)
+        end_minutes = parse_time_to_minutes(close_time_str)
+        
+        if start_minutes > end_minutes:
+            st.error("Opening time cannot be later than closing time.")
+            end_minutes = start_minutes
             
-            required_cols = ["Location Name", "Location Type", "Latitude", "Longitude", "Demand", "Open Time", "Close Time"]
-            missing_cols = [c for c in required_cols if c not in df.columns]
-            
-            if missing_cols:
-                st.sidebar.error(f"Missing columns in uploaded file: {missing_cols}")
-            else:
-                for idx, row in df.iterrows():
-                    # Empty row protection validation check
-                    if pd.isna(row["Location Name"]) or pd.isna(row["Location Type"]):
-                        continue
-                        
-                    l_type = str(row["Location Type"]).strip().lower()
-                    start_min = parse_time_to_minutes(row["Open Time"])
-                    end_min = parse_time_to_minutes(row["Close Time"])
-                    
-                    if l_type == "depot":
-                        depot_indices.append(len(user_locations))
-                        dem = 0
-                    else:
-                        dem = int(row["Demand"]) if not pd.isna(row["Demand"]) else 0
-
-                    user_locations.append({
-                        "name": str(row["Location Name"]),
-                        "coords": (float(row["Latitude"]), float(row["Longitude"])),
-                        "demand": dem,
-                        "time_window": (start_min, end_min)
-                    })
-                st.sidebar.success(f"Successfully loaded {len(user_locations)} locations!")
-        except Exception as e:
-            st.sidebar.error(f"Error parsing file structure: {e}")
+        user_demands.append(demand_input)
+        user_time_windows.append((start_minutes, end_minutes))
 
 # -------------------------------
 # Run solver
 # -------------------------------
 if st.button("🚀 Run Route Optimization"):
-    if not user_locations:
-        st.error("Validation Error: No location configurations found. Please setup manual forms or upload your template data.")
-        st.stop()
-        
-    if not depot_indices:
-        st.error("Validation Error: Please configure at least one location type as 'depot'.")
-        st.stop()
-
-    primary_depot_idx = depot_indices[0]
-    sorted_locations = [user_locations[primary_depot_idx]] + [
-        loc for idx, loc in enumerate(user_locations) if idx != primary_depot_idx
-    ]
-
     multiplier = 1.0
     if scenario == "Peak distribution day":
         multiplier = 1.25
 
-    final_demands = [math.ceil(loc["demand"] * multiplier) if idx != 0 else 0 for idx, loc in enumerate(sorted_locations)]
+    final_demands = [math.ceil(d * multiplier) if idx != 0 else 0 for idx, d in enumerate(user_demands)]
 
     data = {
-        "address_list": [loc["name"] for loc in sorted_locations],
-        "raw_coords": [loc["coords"] for loc in sorted_locations],
+        "address_list": [l["name"] for l in locations_metadata],
+        "raw_coords": [
+            (-6.60315, 106.76218),   # Depot
+            (-6.3353364, 106.68034), # Tangerang
+            (-6.286292, 106.81204),  # Pejaten
+            (-6.171083, 106.787784), # Central Park
+            (-6.333997, 107.13689),  # Cikarang
+            (-6.225614, 106.628867), # Karawaci
+            (-6.484245, 106.84319),  # Cibinong
+            (-6.375656, 106.90173),  # Cibubur
+            (-6.268711, 106.783856), # Pondok Indah Mall 2
+            (-6.176046, 106.721175), # Casablanca
+            (-6.237069, 106.65915),  # Alam Sutera
+            (-6.380091, 106.84468),  # Depok
+            (-6.224799, 106.80397),  # Sudirman
+            (-6.194143, 106.82254),  # Plaza Indonesia
+            (-6.285583, 106.72799),  # Bintaro
+            (-6.616831, 106.82188),  # Bogor
+            (-6.6013858, 106.75367)  # Ciomas
+        ],
         "demands": final_demands,
         "vehicle_capacities": [vehicle_capacity] * num_vehicles,
         "num_vehicles": num_vehicles,
         "depot": 0,
         "depot_start": 0,              
-        "time_windows": [loc["time_window"] for loc in sorted_locations], 
-        "service_times": [0 if idx == 0 else 5 for idx in range(len(sorted_locations))], 
+        "time_windows": user_time_windows, 
+        "service_times": [0, 6, 6, 6, 3, 6, 6, 3, 5, 5, 6, 6, 4, 6, 6, 3, 3], 
         "fuel_cost_per_km": fuel_cost_per_km,
         "driver_cost_per_vehicle": driver_cost_per_vehicle
     }
 
-    if any(lat == 0.0 or lon == 0.0 for lat, lon in data["raw_coords"]):
-        st.error("Validation Error: Ensure all mapped coordinates are valid (cannot be 0.0/0.0).")
-        st.stop()
-
     with st.spinner("Fetching matrix configurations and solving..."):
-        try:
-            data = get_osrm_matrices(data)
-            result = solve_cvrptw(data)
-        except Exception as e:
-            st.error(f"Mapping error from OSRM engine: {e}")
-            st.stop()
+        data = get_osrm_matrices(data)
+        result = solve_cvrptw(data)
         
     if result is None:
         st.error("No feasible solution found with current configurations. Try increasing Vehicle Capacity, reducing demands, or widening time windows.")
@@ -342,6 +267,7 @@ if st.session_state.optimization_result:
     data = st.session_state.optimization_data
     routes = result["route_results"]
 
+    # --- DYNAMIC BASELINE CALCULATION ---
     total_unoptimized_meters = 0
     matrix = data["distance_matrix"]
     for i in range(1, len(data["address_list"])):
@@ -358,14 +284,15 @@ if st.session_state.optimization_result:
     
     col1.metric("Baseline Distance", f"{baseline_distance:.2f} km")
     col2.metric("Optimized Distance", f"{optimized_distance:.2f} km", f"{improvement:.2f}% improvement")
-    col3.metric("Total Dispatched", f"{total_packages} units")
+    col3.metric("Total Dispatched", f"{total_packages} items")
     col4.metric("Fleet Utilization", f"{(total_packages / total_capacity * 100) if total_capacity > 0 else 0:.1f}%")
     col5.metric("Total Operational Cost", f"Rp {total_operational_cost:,.0f}")
     
+    # --- Combined map ---
     st.subheader("🗺️ Combined Route Map")
-    fallback_coord = data["raw_coords"][0]
-    st_folium(create_enhanced_route_map(routes, fallback_coord[0], fallback_coord[1]), width=1000, height=500)
+    st_folium(create_enhanced_route_map(routes), width=1000, height=500)
 
+    # --- Vehicle summary table ---
     st.subheader("🚛 Vehicle Summary Table")
     
     for r in routes:
@@ -386,6 +313,7 @@ if st.session_state.optimization_result:
     
     st.dataframe(vehicle_summary_df, use_container_width=True)
 
+    # --- Per-vehicle sections ---
     for route in routes:
         st.markdown(f"### Vehicle {route['Vehicle']}")
         if route.get("Delivered Packages", 0) == 0 or not route.get("Schedule"):
@@ -393,7 +321,7 @@ if st.session_state.optimization_result:
             continue
 
         with st.expander(f"Vehicle {route['Vehicle']} Map", expanded=False):
-            st_folium(create_enhanced_route_map([route], fallback_coord[0], fallback_coord[1]), width=1000, height=450)
+            st_folium(create_enhanced_route_map([route]), width=1000, height=450)
 
         schedule_records = []
         for s in route["Schedule"]:
@@ -419,22 +347,6 @@ if st.session_state.optimization_result:
         st.download_button(
             label=f"📥 Download CSV Vehicle {route['Vehicle']}", 
             data=csv_bytes,
-            file_name=f"vehicle_{route['Vehicle']}_stops.csv", 
+            file_name=f"indrajaya_vehicle_{route['Vehicle']}_stops.csv", 
             mime="text/csv"
         )
-
-# -------------------------------
-# WATERMARK FOOTER
-# -------------------------------
-st.markdown("---")
-st.markdown(
-    """
-    <div style='text-align: center; color: #888888; font-size: 0.85rem; line-height: 1.6; padding: 10px 0;'>
-        Property of Elementary Industrial Laboratory of industrial engineering<br>
-        <span style='font-size: 0.8rem; color: #aaaaaa;'>
-            Made by: Daniel Delbert Ardielry, Zufar Fathan Hasdiono, Maulida Boru Butarbutar, Natanael Bayu Anggara
-        </span>
-    </div>
-    """, 
-    unsafe_allow_html=True
-)
